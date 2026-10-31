@@ -1,0 +1,51 @@
+name: IN2 Noten pruefen
+on:
+  workflow_dispatch:
+    inputs:
+      test_push:
+        description: Nur Push-Verbindung testen
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 * * * *'
+permissions:
+  contents: write
+concurrency:
+  group: in2-notifier
+  cancel-in-progress: false
+jobs:
+  check:
+    if: github.event.repository.private && (github.event_name == 'workflow_dispatch' || vars.NOTIFIER_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - if: inputs.test_push != true
+        run: python -m playwright install chromium --with-deps
+      - run: python -m unittest -v
+      - name: Noten pruefen
+        env:
+          IN2_STORAGE_STATE: ${{ secrets.IN2_STORAGE_STATE }}
+          STATE_HMAC_KEY: ${{ secrets.STATE_HMAC_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TEST_PUSH: ${{ inputs.test_push }}
+        run: |
+          if [ "$TEST_PUSH" = "true" ]; then
+            python notifier.py --test-push
+          else
+            python notifier.py
+          fi
+      - name: Vergleichsstand sichern
+        if: inputs.test_push != true
+        run: |
+          git config user.name 'IN2 Notifier'
+          git config user.email 'in2-notifier@users.noreply.github.com'
+          git add .state/grades.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update private grade fingerprints'
+            git push
+          fi
