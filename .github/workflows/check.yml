@@ -1,4 +1,6 @@
+
 name: IN2 Noten pruefen
+
 on:
   workflow_dispatch:
     inputs:
@@ -6,27 +8,43 @@ on:
         description: Nur Push-Verbindung testen
         type: boolean
         default: false
+
   schedule:
     - cron: '23 * * * *'
+
 permissions:
   contents: write
+
 concurrency:
   group: in2-notifier
   cancel-in-progress: false
+
 jobs:
   check:
     if: github.event.repository.private && (github.event_name == 'workflow_dispatch' || vars.NOTIFIER_ENABLED == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Repository laden
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
-      - if: inputs.test_push != true
+
+      - name: Python-Abhaengigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Chromium installieren
+        if: inputs.test_push != true
         run: python -m playwright install chromium --with-deps
-      - run: python -m unittest -v
+
+      - name: Tests ausfuehren
+        run: python -m unittest -v
+
       - name: Noten pruefen
         env:
           IN2_STORAGE_STATE: ${{ secrets.IN2_STORAGE_STATE }}
@@ -39,6 +57,7 @@ jobs:
           else
             python notifier.py
           fi
+
       - name: Vergleichsstand sichern
         if: inputs.test_push != true
         run: |
