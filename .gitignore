@@ -1,0 +1,5 @@
+.auth/
+.env
+.venv/
+__pycache__/
+*.zip
