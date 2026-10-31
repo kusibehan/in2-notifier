@@ -1,5 +1,5 @@
 
-"""IN2 Notifier. Never logs grades, credentials or raw errors."""
+"""IN2 Notifier: Checks grades without logging private grade data."""
 
 import hashlib
 import hmac
@@ -13,21 +13,8 @@ from urllib.request import Request, urlopen
 
 from playwright.sync_api import sync_playwright
 
-DASHBOARD_URL = "https://in2.tam.ch/dashboard"
-
-URL = (
-    "https://in2.tam.ch/intranet/"
-    "bzu/default/gradebook/index"
-)
-
+URL = "https://in2.tam.ch/intranet/bzu/default/gradebook/index"
 STATE = Path(".state/grades.json")
-
-NOTEN_SELECTOR = (
-    "body > app-root > ion-app > ion-router-outlet > "
-    "app-dashboard > gr-components-page-default-layout > "
-    "div > ion-split-pane > div > gr-components-menu > "
-    "ion-menu > ion-menu-list > ion-menu-item:nth-child(5)"
-)
 
 CURRENT_STEP = "Start"
 
@@ -57,9 +44,7 @@ def snapshot(courses, key):
     for course, rows in courses:
         for cells in rows:
             if len(cells) != 5:
-                raise ValueError(
-                    "Unexpected grade row"
-                )
+                raise ValueError("Unexpected grade row")
 
             title, value, date, weight, _ = cells
 
@@ -67,10 +52,9 @@ def snapshot(courses, key):
                 r"\d{2}\.\d{2}\.\d{4}",
                 date
             ):
-                raise ValueError(
-                    "Unexpected grade date"
-                )
+                raise ValueError("Unexpected grade date")
 
+            # Noch nicht bewertete Pruefungen ignorieren
             if not value:
                 continue
 
@@ -83,9 +67,7 @@ def snapshot(courses, key):
                     value.replace(",", ".")
                 ) <= 6
             ):
-                raise ValueError(
-                    "Unexpected grade value"
-                )
+                raise ValueError("Unexpected grade value")
 
             identity = fingerprint(
                 [course, title, date],
@@ -93,9 +75,7 @@ def snapshot(courses, key):
             )
 
             if identity in result:
-                raise ValueError(
-                    "Ambiguous duplicate exam"
-                )
+                raise ValueError("Ambiguous duplicate exam")
 
             result[identity] = fingerprint(
                 [value, weight],
@@ -138,9 +118,7 @@ def notify(message):
         timeout=15
     ) as response:
         if response.status != 200:
-            raise RuntimeError(
-                "Notification failed"
-            )
+            raise RuntimeError("Notification failed")
 
 
 def scrape(auth):
@@ -165,56 +143,29 @@ def scrape(auth):
             page = context.new_page()
             page.set_default_timeout(20000)
 
-            # 1. Dashboard oeffnen
-            set_step("Dashboard oeffnen")
+            # Notenbuch direkt oeffnen
+            # Kein Dashboard-Hover erforderlich
+            set_step("Notenbuch direkt oeffnen")
 
             page.goto(
-                DASHBOARD_URL,
+                URL,
                 wait_until="domcontentloaded",
                 timeout=30000
             )
 
-            # 2. Maus ueber Noten bewegen
-            set_step("Noten-Menue oeffnen")
-
-            noten = page.locator(
-                NOTEN_SELECTOR
-            )
-
-            noten.wait_for(
-                state="visible",
-                timeout=20000
-            )
-
-            noten.hover()
-
-            # 3. Untermenue Notenbuch anklicken
-            set_step("Notenbuch oeffnen")
-
-            notenbuch = page.get_by_text(
-                "Notenbuch",
-                exact=True
-            )
-
-            notenbuch.wait_for(
-                state="visible",
-                timeout=20000
-            )
-
-            notenbuch.click()
-
-            # 4. Eingebettetes Notenbuch finden
-            set_step("Notentabelle suchen")
+            # Eingebettetes Notenbuch finden
+            set_step("Notenbuch-Frame finden")
 
             frame = page.frame_locator("iframe")
 
             frame.get_by_role(
                 "treegrid"
             ).wait_for(
-                timeout=20000
+                state="visible",
+                timeout=30000
             )
 
-            # 5. Kurse suchen
+            # Kurse finden
             set_step("Kurse suchen")
 
             expand = frame.get_by_role(
@@ -222,6 +173,13 @@ def scrape(auth):
                 name="Expand",
                 exact=True
             )
+
+            expand.first.wait_for(
+                state="visible",
+                timeout=20000
+            )
+
+            page.wait_for_timeout(1000)
 
             count = expand.count()
 
@@ -236,8 +194,8 @@ def scrape(auth):
                 flush=True
             )
 
-            # 6. Alle Kurszeilen stabil markieren
-            set_step("Kurszeilen vorbereiten")
+            # Kurszeilen vor dem Aufklappen markieren
+            set_step("Kurszeilen markieren")
 
             for i in range(count):
                 link = expand.nth(i)
@@ -256,9 +214,9 @@ def scrape(auth):
                     i
                 )
 
-            # 7. Alle Kurse auslesen
             courses = []
 
+            # Jeden Kurs einzeln auslesen
             for i in range(count):
                 set_step(
                     f"Kurs {i + 1}/{count} oeffnen"
@@ -280,9 +238,9 @@ def scrape(auth):
                     timeout=20000
                 )
 
-                # Detailzeile des richtigen Kurses
+                # Kendo-Detailzeile des Kurses
                 set_step(
-                    f"Kurs {i + 1}/{count} Details laden"
+                    f"Kurs {i + 1}/{count} Detailzeile finden"
                 )
 
                 detail = row.locator(
@@ -294,10 +252,24 @@ def scrape(auth):
                     timeout=20000
                 )
 
-                # Nicht auf columnheader warten.
-                # Die Tabelle direkt verwenden.
+                # Pruefen, ob es die richtige
+                # Kendo-Kursdetailzeile ist
+                detail.locator(
+                    "td.k-detail-cell"
+                ).wait_for(
+                    state="attached",
+                    timeout=20000
+                )
+
+                # Verschachtelte Notentabelle finden
+                set_step(
+                    f"Kurs {i + 1}/{count} Notentabelle finden"
+                )
+
                 tbody = detail.locator(
-                    "tbody"
+                    "td.k-detail-cell "
+                    "div.k-grid-content "
+                    "table tbody"
                 ).last
 
                 tbody.wait_for(
@@ -306,6 +278,10 @@ def scrape(auth):
                 )
 
                 # Eventuelle Ladeanzeige abwarten
+                set_step(
+                    f"Kurs {i + 1}/{count} Laden abwarten"
+                )
+
                 busy = detail.locator(
                     '[aria-busy="true"], '
                     ".k-loading-mask"
@@ -317,14 +293,12 @@ def scrape(auth):
                         timeout=20000
                     )
 
-                # Die Kursdaten werden teilweise
-                # asynchron nachgeladen.
-                # Drei Sekunden haben beim lokalen
-                # Strukturtest funktioniert.
+                # Zusaetzliche Wartezeit fuer
+                # asynchron nachgeladene Notenzeilen
                 page.wait_for_timeout(3000)
 
                 set_step(
-                    f"Kurs {i + 1}/{count} Zeilen lesen"
+                    f"Kurs {i + 1}/{count} Daten lesen"
                 )
 
                 rows = tbody.locator(
@@ -341,7 +315,7 @@ def scrape(auth):
                     ).filter(r => r.length)"""
                 )
 
-                # Explizite Keine-Daten-Zeile
+                # Explizite Leermeldung
                 if (
                     rows
                     and len(rows[0]) == 1
@@ -349,7 +323,6 @@ def scrape(auth):
                 ):
                     rows = []
 
-                # Kurse ohne Notenzeilen sind erlaubt
                 courses.append(
                     (course, rows)
                 )
@@ -381,7 +354,7 @@ def main():
         print("Test message sent.")
         return
 
-    set_step("IN2-Sitzung laden")
+    set_step("IN2-Sitzung aus Secret lesen")
 
     auth = json.loads(
         os.environ["IN2_STORAGE_STATE"]
@@ -392,11 +365,9 @@ def main():
     key = os.environ["STATE_HMAC_KEY"]
 
     if len(key) < 32:
-        raise ValueError(
-            "State key too short"
-        )
+        raise ValueError("State key too short")
 
-    # Noten abrufen
+    # Notenbuch auslesen
     courses = scrape(auth)
 
     # Fingerprints erstellen
@@ -412,7 +383,7 @@ def main():
             "No graded exams found"
         )
 
-    # Mit vorherigem Stand vergleichen
+    # Mit vorherigen Noten vergleichen
     if STATE.exists():
         set_step("Noten vergleichen")
 
@@ -431,7 +402,7 @@ def main():
                 "Oeffne dein Notenbuch."
             )
 
-        # Alte Eintraege behalten
+        # Vorherige Eintraege behalten
         current = old | current
 
     else:
